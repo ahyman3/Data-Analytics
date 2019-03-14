@@ -1,0 +1,326 @@
+---
+title: "Final Project"
+author: "Alex Hyman"
+date: "11/19/2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(dplyr)
+library(tidyr)
+library(klaR)
+library(matrixStats)
+library(rpart)
+library(ggplot2)
+library(rpart.plot)
+library(randomForest)
+library(e1071)
+library(class)
+library(arules)
+library(reshape2)
+```
+
+## Introduction
+
+The United States Forest Service (USFS) administers the forest and grasslands of the United States, which spans more than 193 million acres. One data point the USFS regularly maintains is the type of forest cover of a particular parcel of land. One way to classify the forest cover type of a particular parcel would be to visit every parcel of land, and manually determine what kind of cover type the forest maintains. However, this method is not feasible, considering the enormous span of the USFS responsibilities.
+
+One way the USFS has explored characterizing forest cover types is with machine learning algorithms using cartographic data acquired from satellites and historical United States Geological Survey (USGS) data. The USFS has already explored and labeled the forest cover type of 30 meter x 30 meter parcels of land in the Roosevelt National Forest in northern Colorado, and have now provided the cartographic data for each of these parcels. Using the provided cartographic data along with the labeled forest cover types, I will attempt to train a model to classify each of the labeled 30 x 30 meter parcels of land.
+
+Three different styles of models will be used to conduct supervised classification: tree-based models, distance based models, and probabilistic models.  
+
+## Initial Preprocessing
+
+The USFS dataset provided contained cartographic and geological data that included the soil type (40 different types), elevation, slope, slope aspect, horizontal distance to roadways, horizontal distance to fire points, horizontal and vertical distance to hydrology, hillshade, and which wilderness area of the parcel for 15,120 different parcels.
+
+Along with the data provded by the USFS, I decided to add three different features to the dataset. The first two features created were the sine and the cosine of the slope aspect. These features will provide a more intuitive range for how far north/south and east/west for the machine learning algorithm than the provided degree range from 0 to 360.
+
+The second feature created utilized the vertical distance of the parcel to hydrology and the horizontal distance of the parcel to hydrology to calculate the euclidean distance of the parcel from the hydrology. This feature provides the machine learning algorithms the magnitude of the distance of the parcel from a hydorlogical feature, which could provide insight into how wet or dry is a pracel of land.
+
+```{r data, echo=FALSE}
+#Reading the data frame
+df <- read.csv("train.csv")
+#Creating a cos and sin of the 
+df <- df %>% mutate(sinAspect = sin(Aspect), cosAspect = cos(Aspect)) %>%
+  mutate(Euclidean_Distance_to_Hydrology = 
+           sqrt(Vertical_Distance_To_Hydrology^2 + Horizontal_Distance_To_Hydrology^2))
+#Deleting the id column
+df <- df[, -1]
+#Converting the cover tyoe into a factor
+df$Cover_Type <- as.factor(df$Cover_Type)
+#Looking for any missing columns
+cat("Number of rows missing data:",sum(! complete.cases(df)), "\n")
+
+set.seed(9999)
+#Creating index for the cover type
+train_ix <- createDataPartition(df$Cover_Type, p = 0.8, list = F)
+
+#training set
+train_df <- df[train_ix, ]
+#test set
+test_df <- df[-train_ix, ]
+
+print("Training set dimensions:\n")
+dim(train_df)
+print("Test set dimensions:\n")
+dim(test_df)
+
+print("Distribution of Train Cover Types\n")
+table(train_df$Cover_Type)
+print("Distribution of Test Cover Types\n")
+table(test_df$Cover_Type)
+```
+
+# Exploratory Data Analysis
+
+Before classification models were trained to predict the forest cover type, I wanted to see how some of the data was distributed, and to see if there were any trends or interesting patterns in the labeled data. The first pattern I wanted to explore was: how was the cover types distributed between the four wilderness areas? A bar chart was created to show the number of parcels included in the training data from each wilderness area, and the forest cover type of each parcel was separated by color. The plot showed that most of the parcels came from wilderness areas 1, 3, and 4, and that each of the forest cover types were generally spread mostly between two of the four wilderness areas. A distrubution matrix further shows that no one of the wilderness areas have all seven of the forest cover types. It is important to note that if this distribution is not representative of the actual distrubution of cover types in the different wilderness areas, some modeling algorithms would perform significantly worse on new instances if the algorithm finds that wilderness area is an important variable in determining forest cover type.
+
+```{r WildernessPlot, echo=FALSE}
+#How are the cover types distributed 
+wilderness <- df %>% dplyr::select(contains("Area"), contains("Cover"))
+wilderness$Area <- ifelse(wilderness$Wilderness_Area1 == 1, "Area 1", 
+                          ifelse(wilderness$Wilderness_Area2 == 1, "Area 2", 
+                          ifelse(wilderness$Wilderness_Area3 == 1, "Area 3", "Area 4")))
+wilderness <- wilderness[,c("Cover_Type", "Area")]
+#plotting how the cover types are distributed by area
+p1 <- ggplot(wilderness, aes(x = Area, fill = Cover_Type)) + geom_bar(color = "white")
+p1 <- p1 + ggtitle("Cover Types in Each Area") + ylab("Number of Plots") + xlab("Wilderness Area")
+print(p1)
+print(table(wilderness$Cover_Type, wilderness$Area))
+```
+
+The next variable that I wanted to explore to see if there was a relationship with the forest cover of the parcel was the soil type of the parcel. If a cover type could only grow in a few soil types, it could make sense to group or eliminate certain soil types from the analysis. When looking at the graphic, it appears that a lot of soils are common across all of the forest cover types, but there are some forest cover types that have larger chunks of certain soils in their forest cover type than others. While there are no obvious trends in the soil types of the different forest covers, there could be some information that is quite deciperable by an algorithm, but not the human eye.
+
+```{r soilPlot, echo=FALSE}
+#How are the cover types distributed 
+#formatting the data
+soil <- df %>% dplyr::select(contains("Cover"), contains("Soil")) %>%
+  gather(key = "Soil_Type", value = "Present", -Cover_Type) %>% 
+  filter(Present > 0) %>% dplyr::select(-Present)
+
+#Plotting the soils in each of the cover types
+soil.plot <- ggplot(soil, aes(x = Cover_Type, fill = Soil_Type))
+soil.plot <- soil.plot + geom_bar() + guides(fill=FALSE)
+soil.plot <- soil.plot +  xlab("Cover Type") + ylab("Count")
+soil.plot <- soil.plot +  ggtitle("Soil Types of Forest Covers")
+print(soil.plot)
+```
+
+A third figure was created to see if there were any trends between the aspect of the parcel and the forest cover type; or, if certain forest cover types can only grow in certain directions. Because the the sine and the cosine of the aspect has a range from 0 to 360 degrees, the plot is circular with a magnitude of 1. The different cover types were shown in different color around the circle. The plot did not show any significant patterns, but it could be an important variable along with other variables. 
+
+```{r coverAspect, echo=FALSE}
+#Any pattern with the sin or cos of Aspect
+p2 <- ggplot(df, aes(x = cosAspect, y = sinAspect, color = Cover_Type))
+#Scatter plot
+p2 <- p2 + geom_point(alpha = 0.7) + ggtitle("Sine and Cosine of Aspect")
+p2 <- p2 + xlab("Cosine of Aspect") + ylab("Sine of Aspect")
+p2
+```
+
+The final variables that I explored to see if they had a significant effect on the forest cover type of a particular parcel of forest were elevation and slope. To explore this relationship, I plotted a slope vs. elevation scatterplot with the color of the points showing the forest cover type. The graphic showed that for the most part, the different forest cover types can occur at any range in the slopes; however, the graphic does show that elevation has a fairly significant effect in which forest cover types can occur. Specifically, the graphic shows that Ponderosa Pine, Douglas-fir, and Cottonwood/Willow cover types occur in the lower elevations, and Krummholz, Lodgepole Pine, and Spruce/Fir cover types occur in the higher elevations. 
+
+```{r ElevationPlot, echo=FALSE}
+p3 <- ggplot(df, aes(x = Slope, y = Elevation, color = Cover_Type))
+p3 <- p3 + geom_point(alpha = 0.5) + ggtitle("Elevation vs. Slope")
+p3
+```
+
+#Modeling
+
+While the EDA provided some insight into the behavior of some variables and how they can affect the forest cover type of a given parcel, a supervised learning model trained to classify the forest type from the provided and created featured can prove to be more helpful. 
+
+Three different styles of learning algorithms test to for performance were tree-based, distance-based, and probability-based. Each of the algorithms used the same features when training the model, but certain preocessing steps were taken for certain models that were not required for other models. To train the models, 80% of the labeled data was used as the training set, and the remaining 20% of the labeled data was used as the test set. The models were evaluated for performance by the accuracy of the model on the test set. 
+
+## Tree-based Algorithms
+
+The first of the model style used to predict the forest cover types of the parcels of land was the tree-based models. Of the tree-based models, I chose to train a simple decision tree and a random forest model.  
+
+### Decision Tree
+
+The first tree-based model trained to classify the different cover types was a decision tree. The caret package was used to train multiple decision trees at complexities of 0.01 through 0.00005 to find the best tuned model with a three-fold cross validation. The package chose the decision tree with a complexity of 0.0005 as the best tuned model with a three-fold cross validation accuracy of 0.753. With this best tuned model, the decision tree algorithm was able to score an accuracy 0.751 on the test set. This wold suggest that decision tree model did not overfit the data used to train the model, as the test accuracy was relatively close to the test accuracy.
+
+A glance at the confusion matricx of the decision tree algorithm shows that the model was able to classify Cottonwood/Willow, Aspen, and Krummholz quite well, but often misclassified the other four forest cover types.
+
+```{r DecisionTree, echo=F}
+#train control
+tc <- trainControl(method = "cv", number = 3)
+#default decision tree
+dt <- train(Cover_Type ~ ., data = train_df, trControl = tc, method = "rpart", 
+            tuneGrid = expand.grid(cp = c(0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00005)))
+#looking at the the test set accuracy
+preds <- predict(dt, test_df, "raw")
+dt1.confmat <- confusionMatrix(preds, test_df$Cover_Type)
+cat("Decision tree has an accuracy of", dt1.confmat$overall[1], "on hold out set\n\n")
+dt1.confmat$table
+dt
+```
+
+## Random Forest
+
+A random forest was the second tree-based model trained to classify the forest cover types. The random forest method within the caret package only has on tuning parameter, which is the number of features to sample at each split. The optimal mtry parameter chosen by the model was picked to be 29, which had a threefold cross-validation accuracy of 0.842. The best-tuned random forest model was then used to evaluate on the test set, and an accuracy of 0.857 was achieved. 
+
+Once again, a glance at the confusion matrix shows that the random forest model performed significantly better on the Spruce/Fir, Ponderosa Pine, and Douglas-fir classes than the decision tree was able to, but also continue to classify the Cottonwood/Willow, Aspen, and Krummholz classes well.
+
+Additionally, the variable importance of the features in the training set were checked to see which variables the random forest model found to be the most important when classifying which forest cover type. The variable importance function showed that the model found that elevation was the most important variable when choosing a class for the instance. This is choice of variable makes sense as the most important variable, given the lamenated appearance the slope vs. elevation graph created during the EDA. 
+
+The most important variable function also seemed to show that generally, continuous variables were more important than categorical or binary variables, with Widerness Area 4 being the only categorical variable ranked in the top of the most important variables. The likely reason for Wilderness Area 4 being ranked as an important variable is because Cottonwood/Willow only occur in Wilderness Area 4, which could mean the importance of Wilderness Area 4 is only important when trying to classify the Cottonwood/Willow forest cover types.
+
+```{r RandomForest, echo=F}
+#Random Forest
+#training
+rf <- train(Cover_Type ~ ., data = train_df, trControl = tc, method = "rf")
+#cross-validation performance
+rf   #cross-validation accuracy of 0.837 with mtry = 29
+#Accuracy on the hold out set
+preds <- predict(rf$finalModel, test_df, "response")
+rf.confmat <- confusionMatrix(preds, test_df$Cover_Type)
+cat("Random Forest has an accuracy of", rf.confmat$overall[1], "on hold out set\n\n")
+rf.confmat$table
+varImp(rf)
+```
+
+## Distance-Based Algorithms
+
+The second class of supervised learning algorithms used were distance-based supervised learning algorithms. The distance-based leaning algorithms used in this training included Support Vector Machines (SVM) and K-Nearest Neightbor (KNN). 
+
+Because the evaluations of these algorithms utilize distance (in this case euclidean distance) from either another point or from a support vector, the continous variables in the training set needed to be scaled so features that have higher magnitudes (elevation) are on the same scale as variables with a small scale (sinAspect).
+
+Additionally, the test data needed to be scaled, but because these variables are meant to represent unseen data, the continuous testing data was centered and scaled with the mean and standard deviations found from the continuous variables in the training set.
+
+```{r DistanceEdits, echo=F}
+#Vector of continous variables
+cont.cols <- c("Elevation", "Aspect", "Slope", "Horizontal_Distance_To_Hydrology", "Vertical_Distance_To_Hydrology", "Horizontal_Distance_To_Roadways", "Hillshade_9am", "Hillshade_Noon", "Hillshade_3pm", "Horizontal_Distance_To_Fire_Points", "sinAspect", "cosAspect", "Euclidean_Distance_to_Hydrology")
+
+#training DF with all binary and scaled continous variables
+train.scaled <- train_df %>% dplyr::select(one_of(cont.cols)) %>% 
+  scale %>% cbind(train_df[,! colnames(train_df) %in% cont.cols])
+
+#Scaled testdf
+test.scaled <- test_df %>% dplyr::select(one_of(cont.cols)) %>%
+  scale(center = as.matrix(colMeans(train_df[,cont.cols])), scale = colSds(as.matrix(train_df[,cont.cols]))) %>%
+  cbind(test_df[,! colnames(test_df) %in% cont.cols])
+```
+
+### SVM
+
+SVMs were the second distance based learning algorithm used to classify the forest cover types. The first SVM modles that were trained were SVMs with a linear kernel within the caret package. The only tuning parameter for SVMs with a linear kernel was cost. The linear SVM was trained with cost values ranging from 1 to 0.1 and once again, three-fold cross validation was used to determine which hyper-parameter produced the most accutate model. After all the models were evaluated, caret determined that the best SVM with a linear kernel was the model with the cost value of 1, which had a three-fold cross validation accuracy of 0.714. 
+
+After the SVMs with a linear kernel were trained, more SVM models were trained with a polynomial kernel. The SVMs with polynomial kernels have three different hyperparameter: cost, scale, and degree. To choose the best parameters for the SVM with the polynomial kernel, created a grid to test the best cost, scale, and shape parameters. After the gid search was complete, the caret package chose the SVM with a polynomal kernel to have a cost of 0.8, a scale of 0.2, and a degree of 3. This model resulted in a thee-fold cross validation accuracy of 0.783.
+
+Because the SVM model with the polynomial kernel resulted in the higher accuracy, it was used to predict the test set. The model resulted in a testing accuracy of 0.810, and performed fairly high in predicting all of the forest cover types except for the Lodgepole Pine cover, which none of the classifier have performed too well on. While the 0.810 testing accuracy scored fairly high, the random forest model scored a bit higher with a testing accuracy of 0.857.
+
+```{r SVM, echo=F}
+#finding which kernel works best
+
+#Linear
+linear.grid = expand.grid(C = c(1, 0.9, 0.8, 0.5, 0.25, 0.1))
+svm.linear <- train(Cover_Type ~ ., data = train.scaled, method = "svmLinear", trControl = tc, tuneGrid = linear.grid)
+#svm.linear   #cv-3 Accuracy of 0.716
+#Polynomial
+poly.grid <- expand.grid(scale = c(0.1, 0.2), degree = c(3), C = c(1, 0.8))
+svm.poly <- train(Cover_Type ~ ., data = train.scaled, method = "svmPoly", trControl = tc, tuneGrid = poly.grid)
+svm.poly   #cv-3 Accuracy of 0.782 scale - 0.2, C = 0.8
+#Polynomial was better performing
+svm.confmat <- confusionMatrix(predict(svm.poly, test.scaled), test.scaled$Cover_Type)
+#Accuracy on hold out set
+cat("SVM with Polynomial Kernel has an accuracy of", svm.confmat$overall[1], "on hold out set\n\n")
+#Confusion matrix
+print("SVM (Polynomial Kernel) Confusion Matrix\n")
+print(svm.confmat$table)
+```
+
+### KNN
+
+The next distance based learning algorithm trained to predict the the forest cover types was the K Nearest Neighbor algorithm. The most important hyperparameter when training the a KNN model is the k-value, or how many of the number of the closest points voting on which class the unlabeld point belongs to. Once again, the caret package was used to train the KNN models with K-values from 1 to 25, and three-fold cross validation was used to determine which model performed the best. After all the models were trained and evaluated, it was determined that the best model had a K-value of 1, which had a three-fold cross validation accuracy of 0.690. When the model was used to predict the class of the test set, it was able to acheive a test accuracy of 0.725.
+
+```{r KNN, echo=F}
+#training the knn model
+model_knn <- train(Cover_Type ~ ., data = train.scaled, method = "knn",
+                    tuneGrid = data.frame(k = seq(1, 25)),
+                    trControl = tc) 
+model_knn
+#predicting the test set
+pred <- predict(model_knn, test.scaled)
+#Confusion matrix
+knn.confmat <- confusionMatrix(pred, test.scaled$Cover_Type)
+
+cat("KNN w/ k = 1 has an accuracy of", knn.confmat$overall[1], "on hold out set\n\n")
+knn.confmat$table
+```
+
+## Probabilistic Classifier
+
+The final class of supervised learning algorithms used to predict forest cover types was probabilistic classifier, or classifiers that are able to predict the probability of an instance using historical probability distributions for a set or a class. The only probabilistic classifier used for this experiment was the Naïve Bayes algorithm. The algorithm used the scaled continuous features created for the distance algorithm, but the binary numerical data was converted into factors to so the algorithm would not attempt to confuse the 0 or 1 binary data into actual numerical data, where the distribution would be assumed to be normal.
+
+### Naive Bayes
+
+The klaR package was utilized to train a Naïve Bayes model to fit the training data. Two main hyper parameters were considered when determining the best tune for the model, the whether to usage of the kernel density estimate (KDE) and the Laplace correction factor to prevent 0 probability classes in the predictions. Two models were first trained with the same Laplace factor of 1, but one was trained with the kernel and one was trained without. The model that used the KDE achieved the higher accuracy of the two with a test accuracy of 0.698 versus a test accuracy of 0.651 in the model that did not use the KDE. 
+
+After the model with that used the KDE was determined to perform better than the model without it, I trained two more models that used the KDE, one with a Laplace correction factor of 2 and another with a Laplace correction factor of 5. After testing these models, it showed that the Naïve Bayes model that used the KDE and had a Laplace correction factor of 1 was the best scoring model still.
+
+
+```{r NaiveBayes, echo=FALSE}
+#Naive Bayes classifier
+#getting names of all the categorical colnames
+cat.cols <- train.scaled %>% dplyr::select(colnames(train_df[,! colnames(train_df) %in% cont.cols])) %>%
+  dplyr::select(-Cover_Type) %>% colnames
+#Looping to discretize the categorical columns
+train.nb <- train.scaled
+for(col in cat.cols){
+  train.nb[,col] <- discretize(train.nb[,col], method = "fixed", breaks = c(-1,0.5,1.5), labels = c("NO", "YES"))
+}
+#Repeating above for test set
+test.nb <- test.scaled
+for(col in cat.cols){
+  test.nb[,col] <- discretize(test.nb[,col], method = "fixed", breaks = c(-1,0.5,1.5), labels = c("NO", "YES"))
+}
+#Naive Bayes LaPlace factor of 1, Normal Distribution
+nb1 <- NaiveBayes(Cover_Type ~ ., data = train.nb, fL = 1)
+preds <- suppressWarnings(predict(nb1, test.nb))
+#Confusion Matrix for BB with laplace factor of 1
+nb1.confmat <- confusionMatrix(preds$class, test.nb$Cover_Type)
+cat("Naive Bayes w/ Normal Distribution and fL = 1 has an accuracy of", nb1.confmat$overall[1], "on hold out set\n\n")
+print(nb1.confmat$table)
+
+#Naive Bayes LaPlace factor of 1, KDE
+nb.kde <- NaiveBayes(Cover_Type ~ ., data = train.nb, fL = 1, usekernel = T)
+preds <- suppressWarnings(predict(nb.kde, test.nb))
+#Confusion Matrix for BB with laplace factor of 1
+nb.kde.confmat <- confusionMatrix(preds$class, test.nb$Cover_Type)
+cat("Naive Bayes w/ KDE and fL = 1 has an accuracy of", nb.kde.confmat$overall[1], "on hold out set\n\n")
+print(nb.kde.confmat$table)
+
+#Naive Bayes LaPlace factor of 2, KDE
+nb2.kde <- NaiveBayes(Cover_Type ~ ., data = train.nb, fL = 2, usekernel = T)
+preds <- suppressWarnings(predict(nb2.kde, test.nb))
+#Confusion Matrix for BB with laplace factor of 2
+nb2.kde.confmat <- confusionMatrix(preds$class, test.nb$Cover_Type)
+cat("Naive Bayes w/ KDE and fL = 2 has an accuracy of", nb2.kde.confmat$overall[1], "on hold out set\n\n")
+print(nb2.kde.confmat$table)
+
+#Naive Bayes LaPlace factor of 5, KDE
+nb5.kde <- NaiveBayes(Cover_Type ~ ., data = train.nb, fL = 5, usekernel = T)
+preds <- suppressWarnings(predict(nb5.kde, test.nb))
+#Confusion Matrix for BB with laplace factor of 1
+nb5.kde.confmat <- confusionMatrix(preds$class, test.nb$Cover_Type)
+cat("Naive Bayes w/ KDE and fL = 5 has an accuracy of", nb5.kde.confmat$overall[1], "on hold out set\n\n")
+print(nb5.kde.confmat$table)
+```
+
+## Conclusions
+
+```{r writingCSV, echo=FALSE}
+#Random Forest was best model
+test.all <- read.csv("test.csv")
+#Feature engineering for the final test data
+test.all <- test.all %>% mutate(sinAspect = sin(Aspect), cosAspect = cos(Aspect)) %>%
+  mutate(Euclidean_Distance_to_Hydrology = 
+           sqrt(Vertical_Distance_To_Hydrology^2 + Horizontal_Distance_To_Hydrology^2))
+#Predicting for test cases
+predictions.test <- predict(rf, test.all, "raw")
+#Final data frame
+final.predictions <- data.frame(Id = test.all$Id, Cover_Type = predictions.test)
+write.csv(final.predictions, "submission.csv", row.names = F)
+```
+

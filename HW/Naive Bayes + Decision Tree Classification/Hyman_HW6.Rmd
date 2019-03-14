@@ -1,0 +1,183 @@
+---
+title: "Homework 6 - Alex Hyman"
+author: "Alex Hyman"
+date: "11/18/2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+Using the pixel intensity of hand drawn digits (0-9) can a supervised machine learning algorithm correctly classift which number is drawn? The data provided contains the pixel intensity for 42,000 different 28x28 images. Each of the images are a digit, 0-9 and each of the values provided are the pixel intensities of a specific pixel in the given image.
+
+The generic preprocessing for this problem involved separating the labeled dataset into a training and test set. The training set contained 80% of the data and the test set contained the remaining 20% of the labeled data. The labels also needed to be converted into factors because this is not a regression problem, but a classification problem. The final training set contained 33,604 hand-drawn digits, while the test set contained 8,396 different hand-drawn digits.
+
+
+```{r readingData}
+library(dplyr)
+library(tidyr)
+library(caret)
+library(klaR)
+library(rpart)
+library(rpart.plot)
+library(matrixStats)
+library(arules)
+library(plyr)
+
+#Reading the training file
+data <- read.csv("train.csv")
+#seeing if any missing data
+sum(is.na(data))
+
+#converting the label to a factor
+data$label <- as.factor(data$label)
+#Reading the data that will be prdicted
+validation <- read.csv("test.csv")
+#getting dimensions of data
+dim(data)
+
+set.seed(1000)
+#Getting the index for the training data
+train_ix <- createDataPartition(data$label, p = 0.8, list = F)
+#Training data frame
+train_df <- data[train_ix, ]
+#Test data set
+test_df <- data[-train_ix, ]
+
+#getting new size of the train index
+dim(train_df)
+dim(test_df)
+```
+
+
+## Decision Tree
+An initial decision tree model was created to classify the different hand-drawn digits. A 3-fold cross-validation was conducted on the training set and a cross-validation accuracy of 0.31 was found for the initial model. A plot of the decision tree model shows that the model only had three different leaf nodes, for digits 0, 1, and 9. This would only allow the model to correctly identify 30% of all the digits in the training set.
+
+```{r}
+#Making the training parameters
+tc <- trainControl(method = "cv", number = 3)
+#intial decision tree model
+dt <- train(label ~ ., data = train_df, trControl = tc, method = "rpart")
+#printing the decision tree
+print(dt)
+#printing the decision tree
+rpart.plot(dt$finalModel)
+#decreasing the complexity
+```
+
+The confusion matrix for the decision tree model shows the issue with only having three leaf nodes, While the performance is decent on the digits 0, 1, and 9, everything else is misclassified as it the model does not have any branches that take digits 2-8 into account. A newly tuned decision tree should be made that allows for more branches.
+
+```{r}
+#Predicting the 
+preds <- predict(dt, test_df, "raw")
+#Confusion matrix
+confusionMatrix(preds, test_df$label)
+```
+
+Multple complexity parameter were attempted to find a better decision tree model to predict which class each of the hand-written digits belonged to, and the best parameter found was 0.0005. This value resulted in a cross-validation accuracy of 0.82, and an accuracy on the test set of 0.82. The similarity between the cross-validation accuracy and the test accuracy shows that the model was not overfit, and the model performed fairly well. There were not any pre-processing steps that were required when building the decision tree model, as the decision tree dies not expect any distributions. This decision tree model was too big to print.
+
+```{r}
+#Adjusting the complexity parameter
+dt_grid <- expand.grid("cp" = 0.0005)
+#New decision tree 
+dt_tuned <- train(label ~ ., data = train_df, trControl = tc, 
+                  tuneGrid = dt_grid, method = "rpart")
+#cross validation accuracy
+dt_tuned
+#PRedictinf with newly tuned decision tree
+preds_tuned <- predict(dt_tuned$finalModel, test_df, type = "class")
+#Confusion matrix of new decision tree
+confusionMatrix(preds_tuned, test_df$label)
+```
+
+## Naive Bayes
+Three naive bayes models were also created to classify the hand-written digits. The preprocessing steps involved discretizing each pixel into three categories: "empty", "edge", and "mark". Empty pixels were pixels that had a value of zero as in the pixel. Empty pixels were likely to be pixels that did not have any ink on the pixel  Edge pixels were pixels that had a pixel value between 0 and 100. These pixels were likely pixels that were on the edge of a digit and were not necessarily required, but point where the ink ran into the next pixel. Marked pixels were the pixels that had a value between 100 and 256. These pixels were where the writer likely intended the to fully mark on the image. 
+
+```{r}
+#Getting only the labels
+label <- train_df$label
+#Creating a new daa frame with only those columns
+train_nb <- train_df[,2:ncol(train_df)]
+
+#Discretizing the columns
+for (col in colnames(train_nb)){
+  train_nb[,col] <- discretize(train_nb[,col], method = "fixed", breaks = c(-1, 0.1, 100, 256),
+           labels = c("empty", "edge", "mark"))
+}
+
+#Final training data frame
+train_nb <- data.frame(label = label, train_nb)
+
+#Fixing the test data frame
+test_nb <- test_df[,2:ncol(test_df)]
+#Discretizing the test set
+for (col in colnames(test_nb)){
+  test_nb[,col] <- discretize(test_nb[,col], method = "fixed", breaks = c(-1, 0.1, 100, 256),
+           labels = c("empty", "edge", "mark"))
+}
+#getting test labels
+test_label <- test_df$label
+#creating the test data frame
+test_nb <- data.frame(label = test_label, test_nb)
+```
+
+The first Naive Bayes model was created to not use a kernel, and to have a LaPlace factor of 1. The cross-validation for this set would take too long to determine a cross-validation accuracy, but the model had an accuracy of 0.83 on the test set. 
+
+```{r}
+#training the model
+nb <- NaiveBayes(label ~ ., train_nb, fL = 1, usekernel = F)
+#Predicting the test set
+preds <- suppressWarnings(predict(nb, test_nb, type = "raw"))
+#Confusion matrix
+confusionMatrix(preds$class, test_df$label)
+```
+
+A second Naive Bayes model was also created with the regularization parameter fL set to 50 to see if there was any overfitting in the problem. The same test set that had been used in the first Naive Bayes model was used to find the accuarcy on the test set, and an accuracy of 0.82 was acheived. This was a slightly worse accuracy than original naive bayes model scored. This would seem to suggest that the model is not overfit.
+
+```{r}
+#training the model
+nb2 <- suppressWarnings(NaiveBayes(label ~., train_nb, fL = 50))
+#Predicting the test set
+preds2 <- suppressWarnings(predict(nb2, test_nb, type = "raw"))
+#Confusion matric for the test set
+confusionMatrix(preds2$class, test_nb$label)
+```
+
+A third naive bayes model was created to see if using teh kernel denisty estimate would perform better than using the normal distribution. a Laplace factor of 1 was also used for this model. After using the model to predict on the test set, the model acheived an accuracy of 0.8321, the same accuracy acheived in the first naive bayes model. Becasue the normal distribution model acheived the same score, the first model was determinewd to be our best model
+
+```{r}
+#training the model
+nb3 <- suppressWarnings(NaiveBayes(label ~., train_nb, fL = 1, usekernel = T))
+#Predicting the test set
+preds3 <- suppressWarnings(predict(nb3, test_nb, type = "raw"))
+#Confusion matric for the test set
+confusionMatrix(preds3$class, test_nb$label)
+```
+
+
+## Performance Comparison
+
+When comparing the two models, both performed similarly in terms of accuracy on the test set; however the naive bayes model with a Laplace factor of 1 and the normal distribution kernel had the best overall accuracy on the test set with an accuracy of 0.83. The biggest difference between the two models were that the Decision Tree model took longer to train, but the Naive Bayes model took longer to predict on the test set. The decision tree model likely took longer to train because there are so many different varaibles to parse through and split on. The Naive Bayes model took no time at all to train, but predictions took much longer. This is likely because there are only a set number of calculations the Naive Bayes model needs to work through, but having to conduct that calculation for each of the observations would take a while.
+
+## Kaggle Results
+
+Because the naive bayes model performed slightly better, I decided to use the naive bayes model to predict the unknown data for the kaggle competition. A data frame was created to contain the image ID and the predicted class, and the row names were excluded so only image IDs and the classification was submitted. The final score was 0.83642, which was right within the range of my cross validation/test accuracies!
+
+```{r}
+
+#Discretizing the validation set
+for (col in colnames(validation)){
+  validation[,col] <- discretize(validation[,col], method = "fixed", breaks = c(-1, 0.1, 100, 256),
+           labels = c("empty", "edge", "mark"))
+}
+#Predictions with best model
+final_preds <- suppressWarnings(predict(nb, validation, type = "raw"))
+#image ids
+ids <- seq_along(final_preds$class)
+#Saving in data frame
+predictions <- data.frame("ImageId" = ids, Label = final_preds$class)
+#writing to file
+write.csv(predictions, "kaggle_predictions.csv", row.names = F)
+```

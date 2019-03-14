@@ -1,0 +1,88 @@
+---
+title: 'Homework #3'
+author: "Alex Hyman"
+date: "10/16/2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, echo=FALSE}
+library(arules)
+library(arulesViz)
+library(dplyr)
+library(ggplot2)
+```
+
+## Clean the data
+
+The banking csv file was loaded into the R environment with the read.csv function. The columns of the data frame included the id, age (in years), sex, region of the data object, income (in dollars), marriage status, number of children, car ownership, savings account status, whether the customer has an account with the bank, whether the customer has a mortage, and whether the customer bought the Personal Equity Plan after receiving the mailing campaign. Because association rule algorithms require all columns to be discrete, the id column needs to be deleted and the age, income, number of children columns need to be converted into discrete columns.
+
+The age column was discretized by frequency into three seperate categories: Young, Adult, and Old. I decided to discretize age by frequency becasue a histogram of the different ages of customers who received the promotional campaign in the mail was fairly uniform, therefore both the frequency and interval should be fairly uniform. 
+
+The income column was discretized by interval into three classes: Low, Middle, and Upper. I decided to disctretize income by equal intervals because the income histogram showed a heavy right-skew with a long tail on the positive side. If income was to be discretized by equal frequency, there would a lot of lower-income customers that are grouped into the middle class, and a lot of custoemrs that are middle class grouped into the upper class income group.
+
+The number of children column was discretized into three different categories: None, One, and Multiple. I decided to separate the categories into these categories because I wanted to distinguish between customers that had children and those who had had not had children, and I wanted to see if there were any difference in the behavior of customers with one child versus customers with multiple children. There were also barely enough customers with three children to group all of these customers into one category, so I determined ir would be most appropriate to group them with customers with two children.
+
+```{r fixData}
+#Read data
+data <- read.csv("bankdata_csv_all.csv")
+#Get rid of ID
+data <- data %>% select(-id)
+#hist of age
+hist(data$age)
+
+#Discretize Age
+data$age <- discretize(data$age, labels=c("Young", "Adult", "Old"))
+
+#hist of income
+hist(data$income)
+#Discretize Income
+data$income <- discretize(data$income, method = "interval", labels=
+                         c("Low", "Middle", "Upper"))
+
+#Children hist
+ggplot(data, aes(children)) + geom_bar()
+#Discretizing children
+data$children <- ifelse(data$children == 0, "None", ifelse(data$children == 1, "One", "Multiple"))
+#Making children a factor
+data$children <- as.factor(data$children)
+```
+## Creating Rules
+
+The the apriori function from the arules package was used to mine some association rules from the data set. The target number of rules was between 20-30, and the rules had to include the Personal Equity Plan (PEP) as the RHS item. Having the PEP as the RHS item would mean that the items on the LHS are giving insight to how a customer with this profile is likely to react in terms of the PEP. 
+
+To limit the amount of rules mined from the banking dataset, minimum values for support and confidence were set at various levels. The support measurement sets a limit to how prevalent the combination of categories is within the dataset and the confidence informs us of how strong the rule is. 
+
+Originally, a minimum support value of 0.2 and minimum confidence value of 0.8 was set. This resulted in zero rules being found that had the PEP as the RHS item. The support and confidence values were then dropped to 0.15 minimum support and 0.75 minimum confidence. These values resulted in 7 rules being formed, all of which occurred more than 100 times in the bank dataset. Finally, the minimum support was reduced 0.10, and the minimum confindence was maintained at 0.75. These final parameters resulted in 28 different rules being creates having the PEP as the RHS item of the rule.
+
+
+```{r}
+rules <- apriori(data, parameter = list("supp" = 0.1, "conf" = 0.75), appearance = list(rhs=c("pep=YES", "pep=NO")))
+rules <- sort(rules, by = "lift")
+inspect(rules)
+```
+
+## Interesting Rules
+
+
+LHS | RHS | Support | Confidence | Lift
+------------- | -------------
+Table Cell | Cell 2 | Cell 3 | Cell 4 | Cell 5
+Cell 3 | Cell 4  | Cell 3 | Cell 4 | Cell 5
+
+{children=One}	                                          =>	  {pep=YES}	      0.1833333	0.8148148	1.784266
+{income=Low,children=Multiple}                          	=>	  {pep=NO}      	0.1400000	0.8936170	1.644694
+{sex=FEMALE,married=YES,children=None}	                  =>	  {pep=NO}      	0.1300000	0.8297872	1.527216
+{married=YES,children=None,save_act=YES}	                =>  	{pep=NO}      	0.1783333	0.8991597	1.654895	
+{children=None,car=NO,save_act=YES}	                      =>	  {pep=NO}	      0.1116667	0.7528090	1.385538	
+
+```{r}
+nrow(data[(data$children == "One"),])
+
+(110 / 600) / ((274 / 600) * (135 / 600))
+```
+
+

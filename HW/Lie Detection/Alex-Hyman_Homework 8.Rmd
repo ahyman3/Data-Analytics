@@ -1,0 +1,213 @@
+---
+title: "Homework 8"
+author: "Alex Hyman"
+date: "11/29/2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidytext)
+library(stringr)
+library(dplyr)
+library(tidyr)
+library(wordcloud)
+library(ggplot2)
+library(SnowballC)
+library(caret)
+library(e1071)
+library(klaR)
+library(arules)
+```
+
+## Reading the data
+
+
+```{r readingData}
+#Reading the data
+data <- readLines("lie_detector.csv")
+#empty vectors of data
+lies <- character(length = length(data))
+sentiment <- character(length = length(data))
+reviews <- character(length = length(data))
+#looping through the lines
+for (i in seq_along(data)){
+  #getting the line
+  line <- data[i]
+  #Getting the lie
+  lies[i] <- substr(line, 1, 1)
+  #Gettinf the sentiment
+  sentiment[i] <- substr(line, 3, 3)
+  #getting the review
+  review <- substr(line, 6, (nchar(line) - 1))
+  #Replacing the backslashes
+  review <- gsub("\\", "", review, fixed = T)
+  #saving the reviews
+  reviews[i] <- review
+}
+#Creating IDs for the reviews
+id <- seq_along(reviews)
+#Creating the data frame
+df <- data.frame(id = id, sentiment = sentiment, lie = lies, review = reviews)
+#Getting rid of the first row
+df <- df[2:nrow(df), ]
+#Converting id to character
+df$review <- as.character(df$review)
+df$sentiment <- droplevels(df$sentiment)
+df$lie <- droplevels(df$lie)
+```
+
+## Text Processing
+
+You can also embed plots, for example:
+
+```{r wordProcessing, echo=FALSE}
+#tokenizing
+review_words <- df %>% 
+  dplyr::select(id, sentiment, lie, review) %>% 
+  unnest_tokens(word, review, to_lower = TRUE)
+#stemming
+review_words$word <- wordStem(review_words$word)
+#removing non-alphabetical tokens
+review_words <- review_words %>% 
+  filter(!word %in% stop_words$word,
+         str_detect(word, "^[a-z']+$"))
+#Making tfidf
+review_words_dtm <- review_words %>% 
+  count(id, sentiment, lie, word) %>% 
+  bind_tf_idf(word, id, n) %>% 
+  dplyr::select(id, sentiment, lie, word, tf_idf) %>% 
+  spread(key = word, value = tf_idf)
+#Making all NAs a 0
+review_words_dtm[is.na(review_words_dtm)] <- 0
+```
+
+## Sentiment
+
+
+### SVM
+
+
+```{r}
+#Making a data frame for only sentiment analysis
+sentiment_df <- review_words_dtm %>% 
+  dplyr::select(-id, -lie)
+#Replacing na with 0
+sentiment_df[,2:ncol(sentiment_df)] <- scale(sentiment_df[,2:ncol(sentiment_df)])
+#train test split
+set.seed(1000)
+train_ix <- createDataPartition(sentiment_df$sentiment, p = 0.75, list = F)
+sentiment.train <- sentiment_df[train_ix, ]
+sentiment.test <- sentiment_df[-train_ix, ]
+#train control
+tc <- trainControl(method = "cv", number = 10)
+
+#SVM cost grid
+linear.grid = expand.grid(C = c(1, 0.9, 0.8, 0.5, 0.25, 0.1))
+#training linear svm
+svm.sentiment.linear <- suppressWarnings(train(sentiment ~ ., data = sentiment.train, trControl = tc, 
+                              method = "svmLinear", tuneGrid = linear.grid))
+preds.linear <- predict(svm.sentiment.linear, sentiment.test)
+svm.confmat.linear <- confusionMatrix(preds.linear, sentiment.test$sentiment)
+svm.confmat.linear
+```
+
+### Naive Bayes
+
+```{r}
+nb <- NaiveBayes(sentiment ~ ., data = sentiment.train, fL = 1, usekernel = T) 
+#predicting
+preds <- predict(nb, sentiment.test[,-1])
+confusionMatrix(preds$class, sentiment.test$sentiment)
+
+#Make only binary factors
+sentiment.nb <- review_words_dtm %>% dplyr::select(-id, -lie)
+sentiment.nb[sentiment.nb > 0] <- "Yes" 
+sentiment.nb[sentiment.nb == 0] <-"No"
+words <- colnames(sentiment.nb)[2:ncol(sentiment.nb)]
+sentiment.nb[words] <- lapply(sentiment.nb[words], factor)
+
+
+#Train and test split
+train.nb <- sentiment.nb[train_ix,]
+test.nb <- sentiment.nb[-train_ix,]
+#Training model
+nb.binary <- suppressWarnings(NaiveBayes(sentiment ~ ., data=train.nb, fL = 1, usekernel = F))
+preds <- suppressWarnings(predict(nb.binary, test.nb[,-1]))
+nb.sentiment.confmat <- confusionMatrix(preds$class, test.nb$sentiment)
+nb.sentiment.confmat
+```
+
+## Lies
+
+
+### SVM
+
+
+```{r}
+#Making a data frame for only sentiment analysis
+lies_df <- review_words_dtm %>% 
+  dplyr::select(-id, -sentiment)
+#Replacing na with 0
+lies_df[is.na(lies_df)] <- 0
+lies_df[,2:ncol(lies_df)] <- scale(lies_df[,2:ncol(lies_df)])
+#train test split
+set.seed(1000)
+lies.train <- lies_df[train_ix, ]
+lies.test <- lies_df[-train_ix, ]
+#train control
+tc <- trainControl(method = "cv", number = 10)
+
+#SVM cost grid
+linear.grid <- expand.grid(C = c(1, 0.9, 0.8, 0.5, 0.25, 0.1))
+#training linear svm
+svm.lies.linear <- suppressWarnings(train(lie ~ ., data = lies.train, trControl = tc, 
+                              method = "svmLinear", tuneGrid = linear.grid))
+svm.lies.linear
+preds.linear <- predict(svm.lies.linear, lies.test)
+svm.confmat.linear <- confusionMatrix(preds.linear, lies.test$lie)
+svm.confmat.linear
+```
+
+### Naive Bayes
+
+```{r}
+#TFIDF
+nb.grid <- expand.grid(fL = c(1,3,7,11), adjust = 1, usekernel = T)
+nb <- suppressWarnings(train(lie ~ ., data = lies.train, 
+                             method = "nb", trControl = tc, tuneGrid = nb.grid))
+preds <- suppressWarnings(predict(nb, sentiment.test))
+confusionMatrix(preds, lies.test$lie)
+
+#Binary
+#Make only binary factors
+lies.nb <- review_words_dtm %>% dplyr::select(-id, -sentiment)
+lies.nb[lies.nb > 0] <- "Yes" 
+lies.nb[lies.nb == 0] <-"No"
+words <- colnames(lies.nb)[2:ncol(lies.nb)]
+lies.nb[words] <- lapply(lies.nb[words], factor)
+
+
+#Train and test split
+train.nb <- lies.nb[train_ix,]
+test.nb <- lies.nb[-train_ix,]
+#Training model
+nb.binary <- suppressWarnings(NaiveBayes(lie ~ ., data=train.nb, fL = 1, usekernel = T))
+preds <- suppressWarnings(predict(nb.binary, test.nb[,-1]))
+nb.lies.confmat <- confusionMatrix(preds$class, test.nb$lie)
+nb.lies.confmat
+```
+
+
+## Variable Importance
+
+```{r}
+gr_sentiment <- gain.ratio(sentiment ~ ., data = sentiment.nb)
+sentiment_order <- rownames(gr_sentiment)[order(gr_sentiment$attr_importance, decreasing = T)]
+sentiment_order[1:20]
+gr_sentiment[order(gr_sentiment$attr_importance, decreasing = T),]
+
+gr_lies <- gain.ratio(lie ~ ., data = lies.nb)
+lies_order <- rownames(gr_lies)[order(gr_lies$attr_importance, decreasing = T)]
+lies_order[1:20]
+gr_lies[order(gr_lies$attr_importance, decreasing = T),]

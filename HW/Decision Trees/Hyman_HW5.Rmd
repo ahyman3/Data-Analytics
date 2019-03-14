@@ -1,0 +1,55 @@
+---
+title: "Untitled"
+author: "Alex Hyman"
+date: "11/6/2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r cars}
+library(caret)
+library(rpart)
+library(dplyr)
+library(tidyr)
+library(rpart.plot)
+library(matrixStats)
+
+set.seed(111)
+#Reading in the file
+df <- read.csv("fedPapers85.csv")
+#Removing the HM and disputed papers from the traiing set
+train_df <- df %>% filter(!author %in% c("HM","dispt")) %>%
+  sample_frac(0.8)
+
+#Dropping the undefined author levels
+train_df$author <- droplevels(train_df$author)
+
+#Get the remaining for test set
+test_df <- df[!df$filename %in% train_df$filename, ] %>% 
+  filter(!author %in% c("dispt", "HM")) %>%
+  select(-filename)
+
+#Dropping the undefined author levels
+test_df$author <- droplevels(test_df$author)
+#get rid of the file name in the training set
+train_df <- train_df %>% select(-filename)
+
+#Creating a test set with just the disputed texts
+dispt <- df %>% filter(author == "dispt")
+
+print("Train set Author Distribution")
+print(table(train_df$author))
+print("Test set Author Distribution")
+print(table(test_df$author))
+```
+
+```{r}
+dt <- train(form = author ~., data = train_df, method = "rpart")
+rpart.plot(dt$finalModel)
+```
+

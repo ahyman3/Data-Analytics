@@ -1,0 +1,169 @@
+---
+title: "Alex-Hyman_HW7"
+author: "Alex Hyman"
+date: "11/24/2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(randomForest)
+library(caret)
+library(e1071)
+library(class)
+library(dplyr)
+library(tidyr)
+```
+
+## Preprocessing
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+#Reading training data
+trainset <- read.csv("train.csv")
+
+#Reading test data
+testset <- read.csv("test.csv")
+testset <- ifelse(testset > 20, 1, 0)
+
+#separating labels from features
+labels <- trainset$label %>% as.factor
+
+#Getting deleting the training labels from the training set
+features <- trainset %>% select(-"label")
+#Making the features either 0 or 1 if the pixel has an intensity value greater than 20
+features <- ifelse(features > 20, 1, 0)
+
+
+set.seed(9999)
+#making the training index index of the data
+train_ix <- createDataPartition(labels, p = 0.8, list = F)
+#train labels
+train_labels <- labels[train_ix]
+#test labels
+test_labels <- labels[-train_ix]
+#train features
+train_features <- features[train_ix,]
+#test features
+test_features <- features[-train_ix,]
+```
+
+### KNN
+
+```{r}
+#KNN-1
+knn.1 <- knn(train = train_features, test = test_features, cl = train_labels, k = 1)
+#confusion matrix of the knn
+#0.9612 accuracy
+confusionMatrix(knn.1, test_labels)
+```
+
+
+```{r}
+#KNN-1
+knn.3 <- knn(train = train_features, test = test_features, cl = train_labels, k = 3)
+#confusion matrix of the knn
+#0.9618 
+confusionMatrix(knn.3, test_labels)
+```
+
+```{r}
+#KNN-1
+knn.5 <- knn(train = train_features, test = test_features, cl = train_labels, k = 5)
+#confusion matrix of the knn
+#0.962
+confusionMatrix(knn.5, test_labels)
+```
+
+### SVM
+
+```{r}
+#svm with linear kernel
+svm.linear <- svm(x = train_features, y = train_labels, kernel = "linear", cost = 1)
+#Linear predictions
+preds.linear <- predict(svm.linear, test_features)
+#confusion matrix
+#0.9189
+print(confusionMatrix(preds.linear, test_labels))
+
+
+#svm with linear kernel
+svm.poly <- svm(x = train_features, y = train_labels, kernel = "linear", cost = 0.5)
+#linear predictions
+preds.poly <- predict(svm.poly, test_features)
+#confusion matrix
+#0.9245
+print(confusionMatrix(preds.poly, test_labels))
+```
+
+
+### Random Forest
+
+```{r}
+#random forest 10 trees
+random.forest.10 <- randomForest(x = train_features, y = train_labels, ntree = 10)
+#random forest predictions
+preds.forest.10 <- predict(random.forest.10, test_features)
+#confusion matrix
+#0.9404
+print(confusionMatrix(preds.forest.10, test_labels))
+
+
+#random forest 100 trees
+random.forest.100 <- randomForest(x = train_features, y = train_labels, ntree = 100)
+#random forest predictions
+preds.forest.100 <- predict(random.forest.100, test_features)
+#confusion matrix
+#0.9668 
+print(confusionMatrix(preds.forest.100, test_labels))
+
+
+#random forest 500 trees
+random.forest.500 <- randomForest(x = train_features, y = train_labels, ntree = 500)
+#random forest predictions
+preds.forest.500 <- predict(random.forest.500, test_features)
+#confusion matrix
+#0.967
+print(confusionMatrix(preds.forest.500, test_labels))
+```
+
+## Kaggle Predictions
+
+```{r}
+#Random forest prediction
+forest.prediction <- predict(random.forest.500, testset)
+#IDs for predictions
+test.ids <- seq_along(forest.prediction)
+#forest data frame
+forest.df <- data.frame(ImageId = test.ids, Label = forest.prediction)
+#Saving prediction
+#accuracy: 0.96757
+write.csv(forest.df, "forest-predictions.csv", row.names = F)
+
+
+#SVM prediction
+svm.prediction <- predict(svm.linear, testset)
+#IDs for predictions
+test.ids <- seq_along(svm.prediction)
+#forest data frame
+svm.df <- data.frame(ImageId = test.ids, Label = svm.prediction)
+#Saving prediction
+#accuracy: 0.91528
+write.csv(svm.df, "svm-predictions.csv", row.names = F)
+
+#KNN prediction
+knn5.prediction <- knn(train = train_features, test = testset, cl = train_labels, k = 5)
+#IDs for predictions
+test.ids <- seq_along(knn5.prediction)
+#forest data frame
+knn.df <- data.frame(ImageId = test.ids, Label = knn5.prediction)
+#Saving prediction
+#accuracy: 0.91528
+write.csv(knn.df, "knn-predictions.csv", row.names = F)
+
+```
+
+

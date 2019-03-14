@@ -1,0 +1,86 @@
+---
+title: 'Homework #4'
+author: "Alex Hyman"
+date: "10/25/2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data Configuration
+
+```{r fedPapers}
+library(tm)
+library(stringr)
+library(factoextra)
+
+#Folder containing the papers
+folder <- 'txt/'
+#files in the folder
+papers <- list.files(folder)
+
+authors <- c()
+text <- c()
+combined.text <- ""
+
+for (i in 1:length(papers)){
+  #Read the file
+  words <- scan(paste(folder, papers[i], sep = ""), character(0), sep = "\n")
+  #Get the author line
+  author <- str_extract(pattern = "Author: [A-Za-z ]+", words)
+  #Get the author Name
+  author <- str_remove(author[!is.na(author)], "Author: ")
+  #storing the author's name
+  authors[i] <- author
+  #Getting rid of indentations
+  words <- str_replace_all(words, pattern =  "        ", "")
+  #Flattening the string to be one long character vector
+  words <- str_flatten(words)
+  #Finding the start of the string
+  loc <- str_locate(words, "To the People of the State of New York:      ")
+  #Extracting only the content of the paper
+  paper.text <- substr(words, loc[1, "end"] + 1, nchar(words))
+  #Storing the paper
+  text[i] <- paper.text
+  #Creating a corpus of 
+  combined.text <- paste(combined.text, paper.text)
+}
+#Creating a data frame of the author and 
+df <- data.frame("author" = authors, "content" = text, word_length = sapply(strsplit(text, " "), length))
+df$content <- as.character(df$content)
+
+#Vectorizing the words
+words.vec <- VectorSource(df$content)
+#Creating the corpus
+corpus <- Corpus(words.vec)
+#Making the words lowercase
+corpus <- tm_map(corpus, content_transformer(tolower))
+#removing punctuation
+corpus <- tm_map(corpus, removePunctuation)
+#Removing any numbers
+corpus <- tm_map(corpus, removeNumbers)
+#removing english stopwords
+corpus <- tm_map(corpus, removeWords, stopwords("english"))
+#Creating term document matrix
+tdm <- TermDocumentMatrix(corpus)
+#Converting it to matrix
+word.count <- as.matrix(tdm)
+
+#Making the words the columns and docs the rows
+word.count <- t(word.count)
+#Finding frequency of words in the paper
+papers <- word.count / df$word_length
+#Adding Author name as the rows
+row.names(papers) <- df$author
+```
+
+
+## K-Means
+
+```{r}
+km <- kmeans(papers, centers = 3, iter.max = 500)
+fviz_cluster(km, data = papers)
+```
+
